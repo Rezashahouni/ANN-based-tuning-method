@@ -5,7 +5,8 @@ from pyswarm import pso
 import skfuzzy as fuzz
 from skfuzzy import control as ctrl
 from geneticalgorithm import geneticalgorithm as ga
-import networkx as nx  
+import networkx as nx
+
 
 class PIDController:
     def __init__(self, Kp, Ki, Kd, setpoint):
@@ -16,108 +17,170 @@ class PIDController:
         self.integral = 0
         self.previous_error = 0
 
-    def update(self, process_variable, dt):
+    def update(self, process_variable, dt, inlet_flow, temperature, pressure, Cd, A, rho):
         error = self.setpoint - process_variable
         self.integral += error * dt
         derivative = (error - self.previous_error) / dt
-        output = self.Kp * error + self.Ki * self.integral + self.Kd * derivative
+
+        # Incorporate dynamic parameters
+        delta_P = pressure - initial_pressure
+        orifice_flow = Cd * A * np.sqrt(2 * abs(delta_P) / rho)
+
+        flow_factor = 1.0 + (inlet_flow - initial_flow) * 0.01
+        temp_factor = 1.0 + (temperature - initial_temperature) * 0.01
+        pressure_factor = 1.0 + (delta_P) * 0.01
+
+        output = (
+                             self.Kp * error + self.Ki * self.integral + self.Kd * derivative) * flow_factor * temp_factor * pressure_factor
         self.previous_error = error
-        return output
+        return output, orifice_flow
+
 
 # Simulation parameters
-time = np.linspace(0, 10, 1000)  # 10 seconds, 1000 points
+time = np.linspace(0, 30, 3000)  # 30 minutes, 3000 points
 dt = time[1] - time[0]
-setpoint = 5.0  # Desired setpoint
 
-# Define setpoints at different time intervals
-setpoints = np.piecewise(time, [time < 10, (time >= 10) & (time < 20), time >= 20], [8.0, 10.0, 7.5])
+# Define setpoints at different time intervals (in minutes)
+setpoints = np.piecewise(time, [time < 10, (time >= 10) & (time < 20), time >= 20], [6.0, 8.0, 15.0])
+
+# Initial fluid parameters
+initial_flow = 50  # ton/hr
+initial_temperature = 30  # degrees Celsius
+initial_pressure = 6  # bar
+Cd = 0.6  # Discharge coefficient
+A = 0.005  # Area of the orifice in square meters
+rho = 1000  # Density of the fluid in kg/m^3
 
 # Initialize PID controller with dummy values
-pid = PIDController(1.0, 0.1, 0.05, setpoint)
+pid = PIDController(1.0, 0.1, 0.05, setpoints[0])
 
 # Process variables
 process_variable = 0.0
 process_values = []
-setpoints = []
+current_setpoints = []
+inlet_flows = []
+temperatures = []
+pressures = []
+orifice_flows = []
 
 # ANN for PID tuning with 4 hidden layers, using MSE as the loss function and Adam optimizer
 ann = MLPRegressor(hidden_layer_sizes=(10, 10, 10, 10), max_iter=1000, solver='adam', alpha=0.0001)
 
+
 # PSO for PID tuning
 def objective(params):
     Kp, Ki, Kd = params
-    pid = PIDController(Kp, Ki, Kd, setpoint)
+    pid = PIDController(Kp, Ki, Kd, setpoints[0])
     process_variable = 0.0
     total_error = 0.0
-    for t in time:
-        control_signal = pid.update(process_variable, dt)
+    for t, sp in zip(time, setpoints):
+        inlet_flow = initial_flow + 2 * np.sin(0.1 * t)
+        temperature = initial_temperature + 5 * np.cos(0.1 * t)
+        pressure = initial_pressure + 1 * np.sin(0.05 * t)
+        control_signal, orifice_flow = pid.update(process_variable, dt, inlet_flow, temperature, pressure, Cd, A, rho)
         process_variable += control_signal * dt
-        total_error += abs(setpoint - process_variable)
-        if t > 1.5 and abs(setpoint - process_variable) > 0.05 * setpoint:
+        total_error += abs(sp - process_variable)
+        if t > 1.5 and abs(sp - process_variable) > 0.05 * sp:
             total_error += 1000  # Penalize if not settled within 1.5 seconds
     return total_error
+
 
 # Initial guess and bounds for PSO
 initial_guess = [1.0, 0.1, 0.05]
 bounds = ([0, 0, 0], [10, 1, 1])
-
-# Optimize PID parameters using PSO
 optimal_params, _ = pso(objective, bounds[0], bounds[1], swarmsize=50, maxiter=100)
 Kp_opt, Ki_opt, Kd_opt = optimal_params
 
 # GA parameters
 varbound = np.array([[0, 10], [0, 1], [0, 1]])
-algorithm_param = {'max_num_iteration': 100, 'population_size': 50, 'mutation_probability': 0.1, 'elit_ratio': 0.01, 'crossover_probability': 0.5, 'parents_portion': 0.3, 'crossover_type': 'uniform', 'max_iteration_without_improv': None}
-
-model = ga(function=objective, dimension=3, variable_type='real', variable_boundaries=varbound, algorithm_parameters=algorithm_param)
+algorithm_param = {
+    'max_num_iteration': 100,
+    'population_size': 50,
+    'mutation_probability': 0.1,
+    'elit_ratio': 0.01,
+    'crossover_probability': 0.5,
+    'parents_portion': 0.3,
+    'crossover_type': 'uniform',
+    'max_iteration_without_improv': None
+}
+model = ga(function=objective, dimension=3, variable_type='real', variable_boundaries=varbound,
+           algorithm_parameters=algorithm_param)
 model.run()
-
-# Get optimized parameters
 Kp_opt, Ki_opt, Kd_opt = model.output_dict['variable']
 
-# Initialize process variable and lists
+# Update PID controller with optimized parameters
+pid = PIDController(Kp_opt, Ki_opt, Kd_opt, setpoints[0])
 process_variable = 0.0
 process_values = []
-setpoints = []
-
-# Update PID controller with optimized parameters
-pid = PIDController(Kp_opt, Ki_opt, Kd_opt, setpoint)
+current_setpoints = []
 
 # Simulation loop with optimized PID
-for t in time:
-    control_signal = pid.update(process_variable, dt)
+for t, sp in zip(time, setpoints):
+    inlet_flow = initial_flow + 2 * np.sin(0.1 * t)
+    temperature = initial_temperature + 5 * np.cos(0.1 * t)
+    pressure = initial_pressure + 1 * np.sin(0.05 * t)
+    pid.setpoint = sp
+    control_signal, orifice_flow = pid.update(process_variable, dt, inlet_flow, temperature, pressure, Cd, A, rho)
     process_variable += control_signal * dt
     process_values.append(process_variable)
-    setpoints.append(setpoint)
+    current_setpoints.append(sp)
+    inlet_flows.append(inlet_flow)
+    temperatures.append(temperature)
+    pressures.append(pressure)
+    orifice_flows.append(orifice_flow)
 
-# Print final values
-print(f"Optimized PID parameters: Kp={Kp_opt}, Ki={Ki_opt}, Kd={Kd_opt}")
-print(f"Final setpoint: {setpoint}")
-print(f"Final process value: {process_values[-1]}")
-# Calculate settling time
-tolerance = 0.05 * setpoint  # 5% tolerance
-settling_time = None
+# Calculate tolerance and settling time
+tolerance = 0.05 * setpoints[-1]  # 5% tolerance
 
-for i in range(len(time)):
-    if abs(process_values[i] - setpoint) <= tolerance:
-        if all(abs(process_values[j] - setpoint) <= tolerance for j in range(i, len(time))):
-            settling_time = time[i]
-            break
+# Plotting results
+plt.figure(figsize=(14, 10))
 
-if settling_time is not None:
-    print(f"Settling time: {settling_time:.2f} seconds")
-else:
-    print("The process variable did not settle within the specified tolerance.")
-
-plt.figure(figsize=(10, 5))
+plt.subplot(5, 1, 1)
 plt.plot(time, process_values, label='Process Value')
-plt.plot(time, setpoints, label='Setpoint', linestyle='--')
-plt.axhline(setpoint + tolerance, color='r', linestyle='--', label='Upper Tolerance')
-plt.axhline(setpoint - tolerance, color='r', linestyle='--', label='Lower Tolerance')
+plt.plot(time, current_setpoints, label='Setpoint', linestyle='--')
+plt.axhline(setpoints[-1] + tolerance, color='r', linestyle='--', label='Upper Tolerance')
+plt.axhline(setpoints[-1] - tolerance, color='r', linestyle='--', label='Lower Tolerance')
 plt.xlabel('Time (min)')
-plt.ylabel('Value')
+plt.ylabel('Process Value (ton/hr)')
 plt.title('Process Variable and Setpoint')
 plt.legend()
 plt.grid(True)
+
+plt.subplot(5, 1, 2)
+plt.plot(time, inlet_flows, label='Inlet Flow')
+plt.xlabel('Time (min)')
+plt.ylabel('Inlet Flow (ton/hr)')
+plt.title('Inlet Flow Over Time')
+plt.legend()
+plt.grid(True)
+
+plt.subplot(5, 1, 3)
+plt.plot(time, temperatures, label='Temperature (°C)')
+plt.xlabel('Time (min)')
+plt.ylabel('Temperature (°C)')
+plt.title('Temperature Over Time')
+plt.legend()
+plt.grid(True)
+
+plt.subplot(5, 1, 4)
+plt.plot(time, pressures, label='Pressure (bar)')
+plt.xlabel('Time (min)')
+plt.ylabel('Pressure (bar)')
+plt.title('Pressure Over Time')
+plt.legend()
+plt.grid(True)
+
+plt.subplot(5, 1, 5)
+plt.plot(time, orifice_flows, label='Orifice Flow')
+plt.xlabel('Time (min)')
+plt.ylabel('Orifice Flow (m³/s)')
+plt.title('Orifice Flow Over Time')
+plt.legend()
+plt.grid(True)
+
+plt.tight_layout()
 plt.show()
 
+print(f"Optimized PID parameters: Kp={Kp_opt}, Ki={Ki_opt}, Kd={Kd_opt}")
+print(f"Final setpoint: {setpoints[-1]}")
+print(f"Final process value: {process_values[-1]}")
