@@ -45,7 +45,7 @@ time = np.linspace(0, 30, 3000)  # 30 minutes, 3000 points
 dt = time[1] - time[0]
 
 # Define setpoints at different time intervals (in minutes)
-setpoints = np.piecewise(time, [time < 10, (time >= 10) & (time < 20), time >= 20], [6.0, 8.0, 10.0])
+setpoints = np.piecewise(time, [time < 10, (time >= 10) & (time < 20), time >= 20], [8.0, 9.0, 10.0])
 
 # Initial fluid parameters
 initial_flow = 20  # ton/hr
