@@ -30,8 +30,12 @@ class PIDController:
         temp_factor = 1.0 + (temperature - initial_temperature) * 0.01
         pressure_factor = 1.0 + (delta_P) * 0.01
 
-        output = (
-                             self.Kp * error + self.Ki * self.integral + self.Kd * derivative) * flow_factor * temp_factor * pressure_factor
+        if inlet_flow < self.setpoint:
+            output = inlet_flow  # Cap the output to the inlet flow if it's less than the setpoint
+        else:
+            output = (
+                                 self.Kp * error + self.Ki * self.integral + self.Kd * derivative) * flow_factor * temp_factor * pressure_factor
+
         self.previous_error = error
         return output, orifice_flow
 
@@ -44,7 +48,7 @@ dt = time[1] - time[0]
 setpoints = np.piecewise(time, [time < 10, (time >= 10) & (time < 20), time >= 20], [6.0, 8.0, 15.0])
 
 # Initial fluid parameters
-initial_flow = 50  # ton/hr
+initial_flow = 20  # ton/hr
 initial_temperature = 30  # degrees Celsius
 initial_pressure = 6  # bar
 Cd = 0.6  # Discharge coefficient
